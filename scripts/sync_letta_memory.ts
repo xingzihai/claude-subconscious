@@ -103,17 +103,6 @@ async function readHookInput(): Promise<HookInput | null> {
 }
 
 /**
- * Count lines in transcript file (for tracking lastProcessedIndex)
- */
-function countTranscriptLines(transcriptPath: string): number {
-  if (!fs.existsSync(transcriptPath)) {
-    return 0;
-  }
-  const content = fs.readFileSync(transcriptPath, 'utf-8');
-  return content.split('\n').filter(line => line.trim()).length;
-}
-
-/**
  * Detect which blocks have changed since last sync
  */
 function detectChangedBlocks(
