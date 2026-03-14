@@ -19,6 +19,7 @@ const LOG_FILE = path.join(TEMP_STATE_DIR, 'send_worker_sdk.log');
 
 interface SdkPayload {
   agentId: string;
+  conversationId: string;
   sessionId: string;
   message: string;
   stateFile: string;
@@ -55,16 +56,21 @@ async function sendViaSdk(payload: SdkPayload): Promise<boolean> {
     sleeptime: { trigger: 'off' }, // don't recurse sleeptime
   };
 
-  if (payload.sdkToolsMode === 'read-only') {
+  if (payload.sdkToolsMode === 'off') {
+    // Listen-only: block all client-side tools, Sub can only use memory operations
+    sessionOptions.disallowedTools = [...blockedTools, ...readOnlyTools, 'Bash', 'Edit', 'Write', 'Task', 'Glob', 'Grep', 'Read'];
+  } else if (payload.sdkToolsMode === 'read-only') {
     sessionOptions.allowedTools = readOnlyTools;
   }
   // 'full' mode: no allowedTools restriction (all tools available)
 
-  log(`Creating SDK session for agent ${payload.agentId} (mode: ${payload.sdkToolsMode})`);
+  const toolsLabel = payload.sdkToolsMode === 'off' ? 'none' : payload.sdkToolsMode === 'read-only' ? readOnlyTools.join(', ') : 'all';
+  log(`Creating SDK session for conversation ${payload.conversationId} (mode: ${payload.sdkToolsMode})`);
+  log(`  agent: ${payload.agentId}`);
   log(`  cwd: ${payload.cwd}`);
-  log(`  allowedTools: ${payload.sdkToolsMode === 'read-only' ? readOnlyTools.join(', ') : 'all'}`);
+  log(`  allowedTools: ${toolsLabel}`);
 
-  const session = resumeSession(payload.agentId, sessionOptions);
+  const session = resumeSession(payload.conversationId, sessionOptions);
 
   try {
     log(`Sending message (${payload.message.length} chars)...`);
@@ -79,6 +85,10 @@ async function sendViaSdk(payload: SdkPayload): Promise<boolean> {
       if (msg.type === 'assistant' && msg.content) {
         assistantResponse += msg.content;
         log(`  Assistant chunk: ${msg.content.substring(0, 100)}...`);
+      } else if (msg.type === 'tool_call') {
+        log(`  Tool call: ${(msg as any).toolName}`);
+      } else if (msg.type === 'error') {
+        log(`  Error: ${(msg as any).message}`);
       }
     }
 

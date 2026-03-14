@@ -19,16 +19,6 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "AskUserQuestion|ExitPlanMode",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/silent-npx.cjs\" tsx \"${CLAUDE_PLUGIN_ROOT}/scripts/plan_checkpoint.ts\"",
-            "timeout": 10
-          }
-        ]
-      },
-      {
         "matcher": "*",
         "hooks": [
           {

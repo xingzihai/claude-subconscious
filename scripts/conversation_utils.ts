@@ -75,7 +75,7 @@ export const SDK_TOOLS_BLOCKED = ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanM
  * Get the SDK tools mode from LETTA_SDK_TOOLS env var.
  * - read-only (default): Sub can read files and search the web
  * - full: Sub has full tool access (use with caution)
- * - off: Legacy mode, no SDK — raw API only (memory-only Sub)
+ * - off: No client-side tools (listen-only, memory operations only)
  */
 export function getSdkToolsMode(): SdkToolsMode {
   const mode = process.env.LETTA_SDK_TOOLS?.toLowerCase();
@@ -312,41 +312,6 @@ export function lookupConversation(cwd: string, sessionId: string): string | nul
   } catch {
     return null;
   }
-}
-
-/**
- * Send a message to a Letta conversation (fire-and-forget style)
- * Returns the response for the caller to handle
- */
-export async function sendMessageToConversation(
-  apiKey: string,
-  conversationId: string,
-  role: string,
-  text: string,
-  log: LogFn = noopLog
-): Promise<Response> {
-  const url = `${LETTA_API_BASE}/conversations/${conversationId}/messages`;
-
-  log(`Sending ${role} message to conversation ${conversationId} (${text.length} chars)`);
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      messages: [
-        {
-          role: role,
-          content: text,
-        }
-      ],
-    }),
-  });
-
-  log(`Response status: ${response.status}`);
-  return response;
 }
 
 // ============================================

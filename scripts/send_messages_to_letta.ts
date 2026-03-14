@@ -26,14 +26,11 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { getAgentId } from './agent_config.js';
 import {
-  LETTA_API_BASE,
   loadSyncState,
   saveSyncState,
   getOrCreateConversation,
   getSyncStateFile,
   spawnSilentWorker,
-  SyncState,
-  LogFn,
   getMode,
   getTempStateDir,
   getSdkToolsMode,
@@ -41,7 +38,6 @@ import {
 import {
   readTranscript,
   formatMessagesForLetta,
-  TranscriptMessage,
 } from './transcript_utils.js';
 
 // ESM-compatible __dirname
@@ -103,119 +99,6 @@ async function readHookInput(): Promise<HookInput> {
   });
 }
 
-
-interface SendResult {
-  skipped: boolean;
-}
-
-/**
- * Send a message to a Letta conversation
- * Note: The conversations API streams responses, so we consume minimally
- * Returns { skipped: true } if conversation is busy (409), otherwise { skipped: false }
- */
-async function sendMessageToConversation(
-  apiKey: string,
-  conversationId: string,
-  role: string,
-  text: string
-): Promise<SendResult> {
-  const url = `${LETTA_API_BASE}/conversations/${conversationId}/messages`;
-
-  log(`Sending ${role} message to conversation ${conversationId} (${text.length} chars)`);
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      messages: [
-        {
-          role: role,
-          content: text,
-        }
-      ],
-    }),
-  });
-
-  log(`  Response status: ${response.status}`);
-
-  // Handle 409 Conflict gracefully - conversation is busy, skip and retry on next Stop
-  if (response.status === 409) {
-    log(`  Conversation busy (409) - skipping, will sync on next Stop`);
-    return { skipped: true };
-  }
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    log(`  Error response: ${errorText}`);
-    throw new Error(`Letta API error (${response.status}): ${errorText}`);
-  }
-
-  // Consume the stream minimally - just read first chunk to confirm it started
-  // The agent will continue processing in the background
-  const reader = response.body?.getReader();
-  if (reader) {
-    try {
-      const { value } = await reader.read();
-      if (value) {
-        const chunk = new TextDecoder().decode(value);
-        log(`  Stream started, first chunk: ${chunk.substring(0, 100)}...`);
-      }
-    } finally {
-      reader.cancel(); // Release the stream
-    }
-  }
-
-  log(`  Message sent to conversation successfully`);
-  return { skipped: false };
-}
-
-/**
- * Send batch of messages to Letta conversation (as a combined system message for context)
- * Returns { skipped: true } if conversation was busy, { skipped: false } otherwise
- */
-async function sendBatchToConversation(
-  apiKey: string,
-  conversationId: string,
-  sessionId: string,
-  messages: Array<{role: string, text: string}>
-): Promise<SendResult> {
-  if (messages.length === 0) {
-    log(`No messages to send`);
-    return { skipped: false };
-  }
-
-  // Format as XML-structured transcript
-  const transcriptEntries = messages.map(m => {
-    const role = m.role === 'user' ? 'user' : m.role === 'assistant' ? 'claude_code' : 'system';
-    // Escape XML special chars in text
-    const escaped = m.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    return `<message role="${role}">\n${escaped}\n</message>`;
-  }).join('\n');
-
-  const userMessage = `<claude_code_session_update>
-<session_id>${sessionId}</session_id>
-
-<transcript>
-${transcriptEntries}
-</transcript>
-
-<instructions>
-You may provide commentary or guidance for Claude Code. Your response will be added to Claude's context window on the next prompt. Use this to:
-- Offer observations about the user's work
-- Provide reminders or context from your memory
-- Suggest approaches or flag potential issues
-- Send async messages/guidance to Claude Code
-
-Write your response as if speaking directly to Claude Code.
-</instructions>
-</claude_code_session_update>`;
-
-  log(`Sending batch of ${messages.length} messages to conversation ${conversationId}`);
-  return await sendMessageToConversation(apiKey, conversationId, 'user', userMessage);
-}
 
 /**
  * Main function
@@ -323,47 +206,29 @@ Write your response as if speaking directly to Claude Code.
 </instructions>
 </claude_code_session_update>`;
 
-    // Decide transport: SDK (with client-side tools) or legacy (raw API)
+    // Send via Letta Code SDK (Sub gets client-side tools)
     const sdkToolsMode = getSdkToolsMode();
     log(`SDK tools mode: ${sdkToolsMode}`);
 
     const payloadFile = path.join(TEMP_STATE_DIR, `payload-${hookInput.session_id}-${Date.now()}.json`);
     const stateFile = getSyncStateFile(hookInput.cwd, hookInput.session_id);
 
-    if (sdkToolsMode !== 'off') {
-      // SDK mode: send via Letta Code SDK (Sub gets client-side tools)
-      const sdkPayload = {
-        agentId,
-        sessionId: hookInput.session_id,
-        message: userMessage,
-        stateFile,
-        newLastProcessedIndex: messages.length - 1,
-        cwd: hookInput.cwd,
-        sdkToolsMode,
-      };
-      fs.writeFileSync(payloadFile, JSON.stringify(sdkPayload), 'utf-8');
-      log(`Wrote SDK payload to ${payloadFile}`);
+    const sdkPayload = {
+      agentId,
+      conversationId,
+      sessionId: hookInput.session_id,
+      message: userMessage,
+      stateFile,
+      newLastProcessedIndex: messages.length - 1,
+      cwd: hookInput.cwd,
+      sdkToolsMode,
+    };
+    fs.writeFileSync(payloadFile, JSON.stringify(sdkPayload), 'utf-8');
+    log(`Wrote SDK payload to ${payloadFile}`);
 
-      const workerScript = path.join(__dirname, 'send_worker_sdk.ts');
-      const child = spawnSilentWorker(workerScript, payloadFile, hookInput.cwd);
-      log(`Spawned SDK worker (PID: ${child.pid})`);
-    } else {
-      // Legacy mode: send via raw API (memory-only Sub)
-      const legacyPayload = {
-        apiKey,
-        conversationId,
-        sessionId: hookInput.session_id,
-        message: userMessage,
-        stateFile,
-        newLastProcessedIndex: messages.length - 1,
-      };
-      fs.writeFileSync(payloadFile, JSON.stringify(legacyPayload), 'utf-8');
-      log(`Wrote legacy payload to ${payloadFile}`);
-
-      const workerScript = path.join(__dirname, 'send_worker.ts');
-      const child = spawnSilentWorker(workerScript, payloadFile, hookInput.cwd);
-      log(`Spawned legacy worker (PID: ${child.pid})`);
-    }
+    const workerScript = path.join(__dirname, 'send_worker_sdk.ts');
+    const child = spawnSilentWorker(workerScript, payloadFile, hookInput.cwd);
+    log(`Spawned SDK worker (PID: ${child.pid})`);
 
     log('Hook completed (worker running in background)');
 

@@ -2,7 +2,7 @@
  * Transcript Utilities
  *
  * Shared utilities for reading and formatting Claude Code transcripts.
- * Used by send_messages_to_letta.ts and plan_checkpoint.ts.
+ * Used by send_messages_to_letta.ts.
  */
 
 import * as fs from 'fs';
